@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 
+'''
 class MiniModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
@@ -17,19 +18,56 @@ class MiniModel(nn.Module):
         )
     def forward(self, x):
         return self.net(x)
+'''
+
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2, num_heads=4):
+        super().__init__() 
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim    
+
+        self.input_fc = nn.Linear(input_dim, hidden_dim) # 입력 차원을 임베딩 차원으로
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, # 입출력 벡터 차원 / 트랜스포머 내부 히든 크기
+            nhead=num_heads, # 멀티헤드어텐션 헤드 수
+            dim_feedforward=hidden_dim * 4, # feedforward 네트워크의 내부 차원 / *4로 차원 확장
+            dropout=0.1, 
+            activation='relu',
+            batch_first=True, # 배치 차원이 첫 번째 차원인지 여부 (b, seq, feature)
+        )
+        
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.output_fc = nn.Linear(hidden_dim, output_dim) # 임베딩 차원을 출력 차원으로
+
+    def forward(self, x):
+        """
+        x: (batch_size, seq_length, input_dim)
+        """
+        x = self.input_fc(x)  # (batch_size, seq_length, input_dim) -> (batch_size, seq_length, hidden_dim)
+        x = self.transformer(x)  # (batch_size, seq_length, hidden_dim)
+        x = self.output_fc(x)  # (batch_size, seq_length, hiddien_dim) -> (batch_size, seq_length, output_dim)
+        return x
 
 def train_one_epoch(model, dataloader, optimizer, loss_fn, epoch, rank, writer=None):
     model.train()
     total_loss = 0.0
     for batch_idx, (x, y) in enumerate(dataloader):
+        x = x.unsqueeze(1)  # (batch_size, 1, input_dim)
+        y = y.unsqueeze(1)  # (batch_size, 1, output_dim)
+
         optimizer.zero_grad()
         y_pred = model(x)
         loss = loss_fn(y_pred, y)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+
         if batch_idx % 10 == 0:
             print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss: {loss.item()}") 
+
     avg_loss = total_loss / len(dataloader)
     print(f"Rank {rank}, Epoch {epoch}, Average Loss: {avg_loss}")
 
@@ -44,6 +82,9 @@ def valid_one_epoch(model, dataloader, loss_fn, epoch, rank, writer=None):
     total_loss = 0.0
     with torch.no_grad():
         for batch_idx, (x, y) in enumerate(dataloader):
+            x = x.unsqueeze(1)  # (batch_size, 1, input_dim)
+            y = y.unsqueeze(1)  # (batch_size, 1, output_dim
+            
             y_pred = model(x)
             loss = loss_fn(y_pred, y)
             total_loss += loss.item()
@@ -102,7 +143,14 @@ def run(rank, world_size, args):
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=32, shuffle=False)
 
-    model = MiniModel(args.input_dim, args.hidden_dim, args.output_dim)
+    model = TransformerModel(
+        input_dim=args.input_dim,
+        hidden_dim=args.hidden_dim,
+        output_dim=args.output_dim,
+        num_layers=2,
+        num_heads=4 
+    )
+
     print("파라미터 개수:", sum(p.numel() for p in model.parameters()))
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()
